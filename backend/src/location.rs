@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use std::error::Error as StdError;
 
 const LOCATION_CACHE_FILE: &str = "cache/location_cache.json";
 
@@ -71,13 +72,30 @@ pub async fn get_coordinates(
     );
     let client = reqwest::Client::new();
 
-    let response = client
+    let response = match client
         .get(&url)
         .header("User-Agent", "wreport (eemeliruoh@gmail.com)") // <-- Required!
         .send()
-        .await?
-        .json::<GeocodeResponse>()
-        .await?;
+        .await
+    {
+        Ok(resp) => match resp.json::<GeocodeResponse>().await {
+            Ok(json) => json,
+            Err(e) => {
+                eprintln!("Failed to parse geocode JSON response: {:#}", e);
+                return Err(Box::new(e));
+            }
+        },
+        Err(e) => {
+            // Print the full error chain to stderr so docker logs capture the root cause
+            eprintln!("Failed to send geocode request for url ({}): {}", url, e);
+            let mut source = e.source();
+            while let Some(s) = source {
+                eprintln!("  caused by: {}", s);
+                source = s.source();
+            }
+            return Err(Box::new(e));
+        }
+    };
 
     if let Some(result) = response.0.first() {
         let lat: f64 = result.lat.parse()?;

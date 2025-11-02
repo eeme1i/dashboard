@@ -193,6 +193,16 @@ async fn load_weather_cache() -> Result<WeatherCache, Box<dyn std::error::Error 
     }
 }
 
+async fn clear_useless_weather_cache(
+    cache: &mut WeatherCache,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let current_time = chrono::Utc::now();
+    cache
+        .cache
+        .retain(|_, entry| current_time.signed_duration_since(entry.time).num_seconds() < 600);
+    Ok(())
+}
+
 async fn save_weather_cache(
     cache: &WeatherCache,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -296,6 +306,7 @@ pub async fn fetch_weather(
     };
 
     cache.cache.insert(key, new_entry);
+    clear_useless_weather_cache(&mut cache).await?;
     save_weather_cache(&cache).await?;
     Ok(PublicWeatherResponse {
         response_type: response.response_type,
