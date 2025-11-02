@@ -1,0 +1,10 @@
+@import url("https://rsms.me/inter/inter.css");
+@import "tailwindcss";
+
+:root {
+	color-scheme: dark;
+}
+
+@theme {
+	--font-sans: "Inter", sans-serif;
+}
