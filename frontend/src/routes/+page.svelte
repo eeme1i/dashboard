@@ -1,11 +1,13 @@
 <script lang="ts">
 	import Clock from "../components/clock.svelte";
+	import T3 from "../components/t3.svelte";
 	import Weather from "../components/weather.svelte";
 </script>
 
 <div
-	class="grid md:grid-cols-2 h-full max-h-full *:bg-neutral-900 *:rounded-md *:p-2 *:h-full gap-2 text-base md:text-4xl"
+	class="grid md:grid-cols-2 h-full max-h-full *:bg-neutral-900 *:rounded-md *:p-2 *:h-full gap-2 text-base md:text-4xl *:first-of-type:row-span-2"
 >
-	<Clock />
 	<Weather />
+	<Clock />
+	<T3 />
 </div>

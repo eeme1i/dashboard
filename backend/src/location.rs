@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::error::Error as StdError;
+use tokio::sync::RwLock;
 
 const LOCATION_CACHE_FILE: &str = "cache/location_cache.json";
 
@@ -35,6 +37,8 @@ struct GeocodeResponse(Vec<GeocodeResult>);
 
 type LocationCache = HashMap<String, Coordinates>;
 
+static CACHE: Lazy<RwLock<LocationCache>> = Lazy::new(|| RwLock::new(LocationCache::new()));
+
 async fn load_cache() -> Result<LocationCache, Box<dyn std::error::Error + Send + Sync>> {
     match tokio::fs::read_to_string(LOCATION_CACHE_FILE).await {
         Ok(data) => {
@@ -61,11 +65,29 @@ async fn save_cache(cache: &LocationCache) -> Result<(), Box<dyn std::error::Err
 pub async fn get_coordinates(
     location: &str,
 ) -> Result<Coordinates, Box<dyn std::error::Error + Send + Sync>> {
-    let mut cache = load_cache().await?;
+    {
+        let cache_read = CACHE.read().await;
+        if let Some(coords) = cache_read.get(location) {
+            return Ok(coords.clone());
+        }
+    }
+    let mut cache_write = CACHE.write().await;
 
-    if let Some(coords) = cache.get(location) {
+    if cache_write.is_empty() {
+        match load_cache().await {
+            Ok(file_cache) => {
+                *cache_write = file_cache;
+            }
+            Err(e) => {
+                eprintln!("Failed to load location cache: {}", e);
+            }
+        }
+    }
+
+    if let Some(coords) = cache_write.get(location) {
         return Ok(coords.clone());
     }
+
     let url = format!(
         "https://nominatim.openstreetmap.org/search?q={}&format=json",
         location
@@ -101,8 +123,10 @@ pub async fn get_coordinates(
         let lat: f64 = result.lat.parse()?;
         let lon: f64 = result.lon.parse()?;
         let coordinates = Coordinates::new(lat, lon);
-        cache.insert(location.to_string(), coordinates.clone());
-        save_cache(&cache).await?;
+        cache_write.insert(location.to_string(), coordinates.clone());
+        if let Err(e) = save_cache(&*cache_write).await {
+            eprintln!("Failed to save location cache: {}", e);
+        }
         Ok(coordinates)
     } else {
         Err("No results found".into())

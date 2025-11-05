@@ -1,10 +1,23 @@
 use chrono_tz::Tz;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::location::Coordinates;
 
 const WEATHER_CACHE_FILE: &str = "cache/weather_cache.json";
 const WEATHER_SUMMARY_CACHE_FILE: &str = "cache/weather_summary_cache.json";
+
+static WEATHER_CACHE: Lazy<RwLock<WeatherCache>> = Lazy::new(|| {
+    RwLock::new(WeatherCache {
+        cache: std::collections::HashMap::new(),
+    })
+});
+static WEATHER_SUMMARY_CACHE: Lazy<RwLock<WeatherSummaryCache>> = Lazy::new(|| {
+    RwLock::new(WeatherSummaryCache {
+        cache: std::collections::HashMap::new(),
+    })
+});
 
 #[derive(Deserialize, Debug, Serialize, Clone)]
 pub struct Geometry {
@@ -267,11 +280,38 @@ pub struct PublicProperties {
 pub async fn fetch_weather(
     coord: &Coordinates,
 ) -> Result<PublicWeatherResponse, Box<dyn std::error::Error + Send + Sync>> {
-    let mut cache = load_weather_cache().await?;
+    {
+        let cache_read = WEATHER_CACHE.read().await;
+        if let Some(entry) = cache_read.cache.get(&coord_key(coord)) {
+            let current_time = chrono::Utc::now();
+            if current_time.signed_duration_since(entry.time).num_seconds() < 600 {
+                return Ok(PublicWeatherResponse {
+                    response_type: entry.weather.response_type.clone(),
+                    geometry: entry.weather.geometry.clone(),
+                    properties: PublicProperties {
+                        meta: entry.weather.properties.meta.clone(),
+                        timeseries: entry.weather.properties.timeseries.clone(),
+                    },
+                });
+            }
+        }
+    }
+    let mut cache_write = WEATHER_CACHE.write().await;
+
+    if cache_write.cache.is_empty() {
+        match load_weather_cache().await {
+            Ok(file_cache) => {
+                *cache_write = file_cache;
+            }
+            Err(e) => {
+                eprintln!("Failed to load weather cache: {}", e);
+            }
+        }
+    }
 
     let key = coord_key(coord);
 
-    if let Some(entry) = cache.cache.get(&key) {
+    if let Some(entry) = cache_write.cache.get(&key) {
         let current_time = chrono::Utc::now();
         if current_time.signed_duration_since(entry.time).num_seconds() < 600 {
             return Ok(PublicWeatherResponse {
@@ -305,9 +345,9 @@ pub async fn fetch_weather(
         weather: response.clone(),
     };
 
-    cache.cache.insert(key, new_entry);
-    clear_useless_weather_cache(&mut cache).await?;
-    save_weather_cache(&cache).await?;
+    cache_write.cache.insert(key, new_entry);
+    clear_useless_weather_cache(&mut cache_write).await?;
+    save_weather_cache(&cache_write).await?;
     Ok(PublicWeatherResponse {
         response_type: response.response_type,
         geometry: response.geometry,
@@ -348,8 +388,30 @@ pub async fn summarize_weather(
         weather.geometry.coordinates[1], weather.geometry.coordinates[0]
     );
 
+    {
+        let cache_read = WEATHER_SUMMARY_CACHE.read().await;
+        if let Some(entry) = cache_read.cache.get(&key) {
+            let current_time = chrono::Utc::now();
+            // Cache summaries for 10 minutes (600 seconds)
+            if current_time.signed_duration_since(entry.time).num_seconds() < 600 {
+                return Ok(entry.summary.clone());
+            }
+        }
+    }
+
     // Try to load from cache
-    let mut summary_cache = load_weather_summary_cache().await?;
+    let mut summary_cache = WEATHER_SUMMARY_CACHE.write().await;
+
+    if summary_cache.cache.is_empty() {
+        match load_weather_summary_cache().await {
+            Ok(file_cache) => {
+                *summary_cache = file_cache;
+            }
+            Err(e) => {
+                eprintln!("Failed to load weather summary cache: {}", e);
+            }
+        }
+    }
 
     if let Some(entry) = summary_cache.cache.get(&key) {
         let current_time = chrono::Utc::now();
@@ -463,45 +525,69 @@ async fn build_prompt(
         .as_ref()
         .and_then(|f| f.details.as_ref());
 
+    // Helper to format optional f64 values as "N/A" when missing
+    let fmt = |opt: Option<f64>| -> String {
+        opt.map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "N/A".to_string())
+    };
+
+    let temp_str = fmt(instant.air_temperature);
+    let wind_str = fmt(instant.wind_speed);
+    let gust_str = fmt(instant.wind_speed_of_gust);
+    let humidity_str = fmt(instant.relative_humidity);
+    let cloud_str = fmt(instant.cloud_area_fraction);
+    let fog_str = fmt(instant.fog_area_fraction);
+
+    let next1_summary = current
+        .next_1_hours
+        .as_ref()
+        .map(|f| f.summary.symbol_code.clone())
+        .unwrap_or_else(|| "N/A".to_string());
+    let next1_precip = fmt(next_1h.and_then(|d| d.precipitation_amount));
+    let next1_prob = fmt(next_1h.and_then(|d| d.probability_of_precipitation));
+
+    let next6_summary = current
+        .next_6_hours
+        .as_ref()
+        .map(|f| f.summary.symbol_code.clone())
+        .unwrap_or_else(|| "N/A".to_string());
+    let next6_max = fmt(next_6h.and_then(|d| d.air_temperature_max));
+    let next6_min = fmt(next_6h.and_then(|d| d.air_temperature_min));
+    let next6_precip = fmt(next_6h.and_then(|d| d.precipitation_amount));
+    let next6_prob = fmt(next_6h.and_then(|d| d.probability_of_precipitation));
+
+    let next12_summary = current
+        .next_12_hours
+        .as_ref()
+        .map(|f| f.summary.symbol_code.clone())
+        .unwrap_or_else(|| "N/A".to_string());
+    let next12_max = fmt(next_12h.and_then(|d| d.air_temperature_max));
+    let next12_min = fmt(next_12h.and_then(|d| d.air_temperature_min));
+    let next12_precip = fmt(next_12h.and_then(|d| d.precipitation_amount));
+    let next12_prob = fmt(next_12h.and_then(|d| d.probability_of_precipitation));
+
     let prompt = format!(
-        "Generate a concise, natural weather description for a dashboard. Keep it under 25 words.\n\nCurrent time: {}\n\nCurrent conditions:\nTemperature: {:.1}°C\nWind: {:.1} m/s with gusts of {:.1} m/s\nHumidity: {:.1}%\nCloud area fraction: {:.1}%\n\nForecast 1 hour:\nSummary: {}\nPrecipitation: {:.1} mm with a probability of {:.1}%\n\nForecast 6 hours:\nSummary: {}\nMax Temperature: {:.1}°C\nMin Temperature: {:.1}°C\nPrecipitation: {:.1} mm with a probability of {:.1}%\n\nForecast 12 hours:\nSummary: {}\nMax Temperature: {:.1}°C\nMin Temperature: {:.1}°C\nPrecipitation: {:.1} mm with a probability of {:.1}%\n\nRequirements:\n- Be conversational and friendly.\n- Do not mention the current temperature. It will be displayed seperately.\n- Upcoming temperatures should be included if there is a significant change.\n- For wind: Use descriptive terms (calm, light, moderate, strong, extreme) - NEVER use specific values.\n- Use natural language, no technical jargon.\n- NO EMOJIS.\n\nGenerate description:",
+        "Generate a concise, natural weather description for a dashboard. Keep it under 25 words.\n\nCurrent time: {}\n\nCurrent conditions:\nTemperature: {}°C\nWind: {} m/s with gusts of {} m/s\nHumidity: {}%\nCloud area fraction: {}%\nFog area fraction: {}%\n\nForecast 1 hour:\nSummary: {}\nPrecipitation: {} mm with a probability of {}%\n\nForecast 6 hours:\nSummary: {}\nMax Temperature: {}°C\nMin Temperature: {}°C\nPrecipitation: {} mm with a probability of {}%\n\nForecast 12 hours:\nSummary: {}\nMax Temperature: {}°C\nMin Temperature: {}°C\nPrecipitation: {} mm with a probability of {}%\n\nRequirements:\n- Be conversational and friendly.\n- Do not mention the current temperature. It will be displayed seperately.\n- Upcoming temperatures should be included if there is a significant change.\n- For wind: Use descriptive terms (calm, light, moderate, strong, extreme) - NEVER use specific values.\n- Use natural language, no technical jargon.\n- NO EMOJIS.\n\nGenerate description:",
         time_str,
-        instant.air_temperature.unwrap_or(0.0),
-        instant.wind_speed.unwrap_or(0.0),
-        instant.wind_speed_of_gust.unwrap_or(0.0),
-        instant.relative_humidity.unwrap_or(0.0),
-        instant.cloud_area_fraction.unwrap_or(0.0),
-        current
-            .next_1_hours
-            .as_ref()
-            .map(|f| &f.summary.symbol_code)
-            .unwrap_or(&"N/A".to_string()),
-        next_1h.and_then(|d| d.precipitation_amount).unwrap_or(0.0),
-        next_1h
-            .and_then(|d| d.probability_of_precipitation)
-            .unwrap_or(0.0),
-        current
-            .next_6_hours
-            .as_ref()
-            .map(|f| &f.summary.symbol_code)
-            .unwrap_or(&"N/A".to_string()),
-        next_6h.and_then(|d| d.air_temperature_max).unwrap_or(0.0),
-        next_6h.and_then(|d| d.air_temperature_min).unwrap_or(0.0),
-        next_6h.and_then(|d| d.precipitation_amount).unwrap_or(0.0),
-        next_6h
-            .and_then(|d| d.probability_of_precipitation)
-            .unwrap_or(0.0),
-        current
-            .next_12_hours
-            .as_ref()
-            .map(|f| &f.summary.symbol_code)
-            .unwrap_or(&"N/A".to_string()),
-        next_12h.and_then(|d| d.air_temperature_max).unwrap_or(0.0),
-        next_12h.and_then(|d| d.air_temperature_min).unwrap_or(0.0),
-        next_12h.and_then(|d| d.precipitation_amount).unwrap_or(0.0),
-        next_12h
-            .and_then(|d| d.probability_of_precipitation)
-            .unwrap_or(0.0),
+        temp_str,
+        wind_str,
+        gust_str,
+        humidity_str,
+        cloud_str,
+        fog_str,
+        next1_summary,
+        next1_precip,
+        next1_prob,
+        next6_summary,
+        next6_max,
+        next6_min,
+        next6_precip,
+        next6_prob,
+        next12_summary,
+        next12_max,
+        next12_min,
+        next12_precip,
+        next12_prob,
     );
 
     Ok(prompt)

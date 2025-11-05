@@ -27,6 +27,7 @@
 		await Promise.all([getWeatherSummary(), getCurrentTemperature()]);
 	}
 
+	let inputEl: HTMLInputElement | null = null;
 	let newLocation = $state<string | null>(null);
 	let savedLocation = $state<string | null>(null);
 
@@ -177,6 +178,7 @@
 <div
 	class="flex flex-col flex-1 h-full gap-2 overflow-y-auto justify-between items-start"
 >
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<form
 		class="flex gap-1 w-full justify-start"
 		onsubmit={(e) => {
@@ -184,12 +186,17 @@
 			handleSave();
 		}}
 	>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
-			class="relative rounded-full border-[0.5px] text-base focus:text-white tracking-normal flex gap-2 px-2 items-center transition duration-150 {inputFocused
+			class="cursor-text relative rounded-full border-[0.5px] text-base focus:text-white tracking-normal flex gap-2 px-2 items-center transition duration-150 {inputFocused
 				? 'border-cyan-400 text-white'
 				: 'hover:border-neutral-400 border-neutral-600 text-neutral-400 hover:text-neutral-400'}"
+			onclick={() => ((inputFocused = true), inputEl?.focus())}
 		>
-			<Navigation size={12} class={inputFocused ? "text-cyan-400" : ""} />
+			<Navigation
+				size={12}
+				class={inputFocused ? "text-cyan-400 fill-cyan-400" : ""}
+			/>
 			<input
 				class="w-max h-full py-2 focus:outline-none transition-all transform duration-150"
 				type="text"
@@ -197,14 +204,15 @@
 				bind:value={newLocation}
 				onfocus={() => (inputFocused = true)}
 				onblur={() => (inputFocused = false)}
+				bind:this={inputEl}
 			/>
 			<button
 				in:fadeAndScale={{ start: 0.8, end: 1, duration: 150 }}
 				out:scale={{ start: 1, duration: 150 }}
-				class="absolute right-2 px-2 py-1 rounded-full w-max bg-neutral-800 hover:bg-neutral-700 text-xs text-white/75 hover:text-white transition-all cursor-pointer border border-neutral-600 hover:border-neutral-400
+				class=" right-2 px-2 py-1 rounded-full w-max bg-neutral-800 hover:bg-neutral-700 text-xs text-white/75 hover:text-white transition-all cursor-pointer border border-neutral-600 hover:border-neutral-400
             {newLocation !== savedLocation && newLocation?.trim() !== ''
 					? 'opacity-100 visible'
-					: 'opacity-0 invisible pointer-events-none'}
+					: 'opacity-0 invisible'}
           "
 				type="submit"
 			>
@@ -242,9 +250,3 @@
 		</p>
 	</div>
 </div>
-
-<style>
-	.input-container {
-		transition: width 300ms ease-in-out;
-	}
-</style>
