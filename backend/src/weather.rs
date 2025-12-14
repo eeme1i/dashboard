@@ -183,7 +183,7 @@ pub struct WeatherCache {
     pub cache: std::collections::HashMap<String, WeatherCacheItem>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct WeatherSummaryCacheItem {
     pub time: chrono::DateTime<chrono::Utc>,
     pub summary: String,
@@ -247,6 +247,20 @@ async fn load_weather_summary_cache()
 async fn save_weather_summary_cache(
     cache: &WeatherSummaryCache,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // we should limit the cache size to 100 entries
+    let mut limited_cache = cache.cache.clone();
+    if limited_cache.len() > 100 {
+        let mut entries: Vec<(&String, &WeatherSummaryCacheItem)> = limited_cache.iter().collect();
+        entries.sort_by_key(|&(_, item)| item.time);
+        let keys_to_remove: Vec<String> = entries
+            .iter()
+            .take(limited_cache.len() - 100)
+            .map(|&(key, _)| key.clone())
+            .collect();
+        for key in keys_to_remove {
+            limited_cache.remove(&key);
+        }
+    }
     let data = serde_json::to_string(cache)?;
     match tokio::fs::create_dir_all("cache").await {
         Ok(_) => (),

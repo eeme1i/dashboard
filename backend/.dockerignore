@@ -1,0 +1,7 @@
+target/
+cache/
+.env
+.env.*
+.DS_Store
+.git/
+*.log

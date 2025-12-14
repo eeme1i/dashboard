@@ -1,0 +1,6 @@
+// ignore all node_modules folders in all subdirectories
+**/node_modules
+**/build
+**/.svelte-kit
+**/cache
+**/target
